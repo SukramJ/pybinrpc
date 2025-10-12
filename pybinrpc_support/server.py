@@ -60,8 +60,8 @@ class FakeServer(SimpleBINRPCServer):
 
     def init(self, callback: str, interface_id: str) -> str:
         """Register a callback server for events."""
-        # Expect format binary://host:port
-        if not (m := re.match("^binary://([^:]+):(\\d+)$", callback)):
+        # Expect format xmlrpc_bin://host:port
+        if not (m := re.match("^xmlrpc_bin://([^:]+):(\\d+)$", callback)):
             return "ERR"
         host, port = m.group(1), int(m.group(2))
         self._callback = (host, port)

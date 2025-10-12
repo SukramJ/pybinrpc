@@ -21,7 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 # =============================================================================
 
 
-class _MethodProxy:
+class _Method:
     """
     Callable method proxy used by `BinRpcServerProxy`.
 
@@ -29,16 +29,18 @@ class _MethodProxy:
     BIN-RPC request with that method name.
     """
 
-    def __init__(self, *, transport: _Transport, name: str):
+    __kwonly_check__ = False
+
+    def __init__(self, transport: _Transport, name: str):
         """Initialize the method proxy."""
         self._t = transport
         self._name = name
 
-    def __getattr__(self, item: str) -> _MethodProxy:  # kwonly: disable
+    def __getattr__(self, item: str) -> _Method:
         """Return a new method proxy with the given name."""
-        return _MethodProxy(transport=self._t, name=f"{self._name}.{item}")
+        return _Method(transport=self._t, name=f"{self._name}.{item}")
 
-    def __call__(self, *params: Any) -> Any:  # kwonly: disable
+    def __call__(self, *params: Any) -> Any:
         """Call the BIN-RPC method with the given parameters."""
         return self._t.call(method=self._name, params=list(params))
 
@@ -128,7 +130,7 @@ class _Transport:
                 self._sock.close()
             self._sock = None
 
-    def call(self, *, method: str, params: list[Any]) -> Any:
+    def call(self, method: str, params: list[Any]) -> Any:  # kwonly: disable
         """Send a BIN-RPC request and return the response."""
         frame = enc_request(method=method, params=params, encoding=self._encoding)
         if self._keep_alive:
@@ -140,7 +142,7 @@ class _Transport:
                         hdr = recv_exact(sock=s, n=8, timeout=self._timeout)
                         total = struct.unpack(">I", hdr[4:8])[0]
                         body = recv_exact(sock=s, n=total - 8, timeout=self._timeout)
-                        return dec_response(frame=hdr + body)
+                        return dec_response(frame=hdr + body, encoding=self._encoding)
                     except Exception:
                         # Drop broken keep-alive and retry once with a new connection
                         self._close()
@@ -154,7 +156,7 @@ class _Transport:
                 hdr = recv_exact(sock=s, n=8, timeout=self._timeout)
                 total = struct.unpack(">I", hdr[4:8])[0]
                 body = recv_exact(sock=s, n=total - 8, timeout=self._timeout)
-                return dec_response(frame=hdr + body)
+                return dec_response(frame=hdr + body, encoding=self._encoding)
             finally:
                 with contextlib.suppress(Exception):
                     s.close()
@@ -167,7 +169,7 @@ class BinRpcServerProxy:
     Example:
     -------
     >>> proxy = BinRpcServerProxy("192.168.0.10", 8701, timeout=5.0, keep_alive=True)
-    >>> proxy.init("binary://192.168.0.20:9126", "python-iface")
+    >>> proxy.init("xmlrpc_bin://192.168.0.20:9126", "python-iface")
     'OK'  # implementation-dependent
     >>> proxy.system.multicall([{"methodName": "ping", "params": []}])
     ['pong']
@@ -200,9 +202,9 @@ class BinRpcServerProxy:
             encoding=encoding,
         )
 
-    def __getattr__(self, name: str) -> _MethodProxy:  # kwonly: disable
+    def __getattr__(self, name: str) -> _Method:  # kwonly: disable
         """Return a method proxy for the given name."""
-        return _MethodProxy(transport=self._t, name=name)
+        return _Method(transport=self._t, name=name)
 
     # Context manager for explicit resource control
     def __enter__(self) -> Self:  # kwonly: disable
@@ -216,30 +218,3 @@ class BinRpcServerProxy:
     def close(self) -> None:
         """Close the underlying keep-alive connection, if any."""
         self._t._close()  # pylint: disable=protected-access
-
-
-# =============================================================================
-# CUxD convenience client
-# =============================================================================
-
-
-class CuxdClient(BinRpcServerProxy):
-    """BIN-RPC client with CUxD convenience methods on top of ServerProxy style."""
-
-    __kwonly_check__ = False
-
-    def init(self, callback: str, interface_id: str) -> Any:
-        """Register callback: `init("binary://<host:port>", interfaceId)`."""
-        return super().__getattr__("init")(callback, interface_id)
-
-    def setValue(self, address: str, datapoint: str, value: Any) -> Any:  # noqa: N802
-        """Set a value for a datapoint: `setValue(address, datapoint, value)`."""
-        return super().__getattr__("setValue")(address, datapoint, value)
-
-    def getValue(self, address: str, datapoint: str) -> Any:  # noqa: N802
-        """Get a value for a datapoint: `getValue(address, datapoint)`."""
-        return super().__getattr__("getValue")(address, datapoint)
-
-    def listDevices(self) -> Any:  # noqa: N802
-        """List devices: `listDevices()`."""
-        return super().__getattr__("listDevices")()

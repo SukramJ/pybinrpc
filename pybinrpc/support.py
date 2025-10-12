@@ -9,12 +9,15 @@ Public API of this module is defined by __all__.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import logging
 import math
 import socket
 import struct
 from typing import Any
 
-from pybinrpc.const import DEFAULT_ENCODING, HDR_REQ, HDR_RES, T_ARRAY, T_BOOL, T_DOUBLE, T_INTEGER, T_STRING, T_STRUCT
+from pybinrpc.const import HDR_REQ, HDR_RES, T_ARRAY, T_BINARY, T_BOOL, T_DOUBLE, T_INTEGER, T_STRING, T_STRUCT
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _be_u32(n: int) -> bytes:
@@ -149,6 +152,12 @@ def _dec_bool(*, buf: memoryview, ofs: int) -> tuple[bool, int]:
     return (buf[ofs] == 1), ofs + 1
 
 
+def _dec_binary(*, buf: memoryview, ofs: int) -> tuple[bytes, int]:
+    length, ofs = _rd_u32(buf=buf, ofs=ofs)  # 4-byte length
+    data = bytes(buf[ofs : ofs + length])  # raw bytes
+    return data, ofs + length
+
+
 def _dec_int(*, buf: memoryview, ofs: int) -> tuple[int, int]:
     """Decode an integer from a BIN-RPC integer."""
     v, ofs = _rd_u32(buf=buf, ofs=ofs)
@@ -164,6 +173,8 @@ def dec_data(*, buf: memoryview, encoding: str, ofs: int = 0) -> tuple[Any, int]
         return _dec_string(buf=buf, ofs=ofs, encoding=encoding)
     if t == T_BOOL:
         return _dec_bool(buf=buf, ofs=ofs)
+    if t == T_BINARY:
+        return _dec_binary(buf=buf, ofs=ofs)
     if t == T_INTEGER:
         return _dec_int(buf=buf, ofs=ofs)
     if t == T_DOUBLE:
@@ -183,6 +194,10 @@ def dec_data(*, buf: memoryview, encoding: str, ofs: int = 0) -> tuple[Any, int]
             val, ofs = dec_data(buf=buf, encoding=encoding, ofs=ofs)
             outd[key] = val
         return outd, ofs
+    if t not in (T_STRING, T_BOOL, T_BINARY, T_INTEGER, T_DOUBLE, T_ARRAY, T_STRUCT):
+        _LOGGER.warning("Unknown BIN-RPC type 0x%08X, treating as string", t)
+        val, ofs = _dec_string(buf=buf, ofs=ofs, encoding=encoding)  # or skip a known number of bytes
+        return val, ofs
     raise ValueError(f"Unsupported BIN-RPC type 0x{t:08X}")
 
 
@@ -201,23 +216,31 @@ def dec_request(*, frame: bytes, encoding: str) -> tuple[str, list[Any]]:
     return method, params
 
 
-def dec_response(*, frame: bytes) -> Any:
+def dec_response(*, frame: bytes, encoding: str) -> Any:
     """
     Decode a response frame as a BIN-RPC response frame.
 
     The response body starts with a 32-bit status code (0 == OK), followed by
-    an encoded BIN-RPC value. We ignore non-zero status for now (protocols may
-    vary) and always attempt to decode the payload if present.
+    an encoded BIN-RPC value. Some peers may omit the status and/or payload.
+    We therefore validate sizes defensively and return None for an empty body.
     """
-    if len(frame) < 8 or frame[:4] != HDR_RES[:4] or frame[4:8] != _be_u32(n=len(frame)):
+    # Be lenient with peer variations: accept any frame starting with b"Bin"
+    if len(frame) < 8 or frame[:3] != b"Bin":
         raise ValueError("Invalid BIN-RPC response frame")
     body = memoryview(frame)[8:]
+    # If there's no body at all, return None (some implementations send header-only frames)
+    if len(body) == 0:
+        return None
     ofs = 0
+    # If there is not enough data for a status field, treat entire body as payload
+    if len(body) < 4:
+        v, _ = dec_data(buf=body, ofs=0, encoding=encoding)
+        return v
     _status, ofs = _rd_u32(buf=body, ofs=ofs)
     # If there's no payload after the status field, return None
     if ofs >= len(body):
         return None
-    v, _ = dec_data(buf=body, ofs=ofs, encoding=DEFAULT_ENCODING)
+    v, _ = dec_data(buf=body, ofs=ofs, encoding=encoding)
     return v
 
 

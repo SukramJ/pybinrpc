@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from pybinrpc.client import CuxdClient
+from pybinrpc.client import BinRpcServerProxy
 from pybinrpc_support.server import FakeServer
 
 # =============================================================================
@@ -21,8 +21,8 @@ from pybinrpc_support.server import FakeServer
 async def test_serverproxy_init_set_get(fake_server: FakeServer) -> None:
     """Test server proxy initialization, setting, and getting values."""
     assert fake_server
-    client = CuxdClient(host="127.0.0.1", port=18701, timeout=2.0, keep_alive=True)
-    ok = client.init("binary://127.0.0.1:19126", "iface-test")
+    client = BinRpcServerProxy(host="127.0.0.1", port=18701, timeout=2.0, keep_alive=True)
+    ok = client.init("xmlrpc_bin://127.0.0.1:19126", "iface-test")
     assert ok == "OK"
     client.setValue("CUX2801001:1", "STATE", True)
     val = client.getValue("CUX2801001:1", "STATE")
@@ -32,7 +32,7 @@ async def test_serverproxy_init_set_get(fake_server: FakeServer) -> None:
 async def test_multicall(fake_server: FakeServer) -> None:
     """Test multicall."""
     assert fake_server
-    client = CuxdClient(host="127.0.0.1", port=18701)
+    client = BinRpcServerProxy(host="127.0.0.1", port=18701)
     res = client.system.multicall(
         [
             {"methodName": "setValue", "params": ["CUX2801002:1", "STATE", 42]},
@@ -45,8 +45,8 @@ async def test_multicall(fake_server: FakeServer) -> None:
 async def test_event_callback(fake_server: FakeServer) -> None:
     """Test event callback."""
     assert fake_server
-    client = CuxdClient(host="127.0.0.1", port=18701)
-    ok = client.init("binary://127.0.0.1:19126", "iface-test")
+    client = BinRpcServerProxy(host="127.0.0.1", port=18701)
+    ok = client.init("xmlrpc_bin://127.0.0.1:19126", "iface-test")
     assert ok == "OK"
     # Trigger event from fake CUxD
     await fake_server.triggerEvent("iface-test", "CUX2801001:1", "STATE", 99)
@@ -59,7 +59,7 @@ async def test_event_callback(fake_server: FakeServer) -> None:
 async def test_list_devices(fake_server: FakeServer) -> None:
     """Test list devices."""
     assert fake_server
-    client = CuxdClient(host="127.0.0.1", port=18701)
+    client = BinRpcServerProxy(host="127.0.0.1", port=18701)
     devs = client.listDevices()
     assert isinstance(devs, list)
     assert any(d.get("ADDRESS") == "CUX2801001:1" for d in devs) is True
