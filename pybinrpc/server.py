@@ -13,7 +13,7 @@ import socketserver
 import struct
 from typing import Any, Final
 
-from pybinrpc.const import DEFAULT_ENCODING, HDR_REQ
+from pybinrpc.const import DEFAULT_ENCODING
 from pybinrpc.support import dec_request, enc_response, recv_exact
 
 _LOGGER: Final = logging.getLogger(__name__)
@@ -32,7 +32,8 @@ class SimpleBINRPCRequestHandler(socketserver.BaseRequestHandler):
         server: SimpleBINRPCServer = self.server  # type: ignore[assignment]
         try:
             hdr = recv_exact(sock=self.request, n=8, timeout=server.timeout)
-            if hdr[:4] != HDR_REQ[:4]:
+            # Be lenient: accept any frame that starts with b"Bin" (request/response marker varies)
+            if hdr[:3] != b"Bin":
                 raise ValueError("Invalid BIN-RPC header")
             total = struct.unpack(">I", hdr[4:8])[0]
             body = recv_exact(sock=self.request, n=total - 8, timeout=server.timeout)
