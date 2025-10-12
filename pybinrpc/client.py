@@ -102,8 +102,9 @@ class _Transport:
             # Explicitly only allow TLSv1.2 and higher
             if hasattr(ctx, "minimum_version") and hasattr(ssl, "TLSVersion"):
                 ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # Python 3.7+
-            else:
-                # For legacy Python, disable TLS <1.2 if possible
+            # For legacy Python, disable TLS <1.2 if possible
+            # Only set ctx.options if the attribute exists on the context
+            elif hasattr(ctx, "options"):
                 if hasattr(ssl, "OP_NO_TLSv1"):
                     ctx.options |= ssl.OP_NO_TLSv1
                 if hasattr(ssl, "OP_NO_TLSv1_1"):
