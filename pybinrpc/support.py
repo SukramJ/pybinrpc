@@ -209,8 +209,15 @@ def dec_data(*, buf: memoryview, encoding: str, ofs: int = 0) -> tuple[Any, int]
 
 
 def dec_request(*, frame: bytes, encoding: str) -> tuple[str, list[Any]]:
-    """Decode a request frame as a BIN-RPC request frame."""
-    if len(frame) < 8 or frame[:4] != HDR_REQ[:4] or frame[4:8] != _be_u32(len(frame)):
+    """
+    Decode a request frame as a BIN-RPC request frame.
+
+    Be lenient to accommodate variations from different implementations
+    (e.g., mdzio/go-hmccu). Accept any frame that starts with b"Bin" and has
+    at least an 8-byte header; rely on the transport layer to have framed
+    the message to the declared size.
+    """
+    if len(frame) < 8 or frame[:3] != b"Bin":
         raise ValueError("Invalid BIN-RPC request frame")
     body = memoryview(frame)[8:]
     ofs = 0
