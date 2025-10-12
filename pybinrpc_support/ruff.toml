@@ -1,0 +1,13 @@
+# This extend our general Ruff rules specifically for pybinrpc_support
+extend = "../pyproject.toml"
+
+[lint.isort]
+known-first-party = [
+    "pybinrpc",
+    "pybinrpc_support"
+]
+
+known-third-party = [
+    "orjson",
+    "voluptuous",
+]

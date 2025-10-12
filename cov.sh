@@ -1,0 +1,1 @@
+pytest --cov=pybinrpc --cov-config=.coveragerc --cov-report html tests/
