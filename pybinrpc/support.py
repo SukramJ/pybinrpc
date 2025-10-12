@@ -13,11 +13,11 @@ import logging
 import math
 import socket
 import struct
-from typing import Any
+from typing import Any, Final
 
 from pybinrpc.const import HDR_REQ, HDR_RES, T_ARRAY, T_BINARY, T_BOOL, T_DOUBLE, T_INTEGER, T_STRING, T_STRUCT
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER: Final = logging.getLogger(__name__)
 
 
 def _be_u32(n: int) -> bytes:
@@ -93,6 +93,11 @@ def enc_struct(*, d: Mapping[str, Any], encoding: str) -> bytes:
     return bytes(out)
 
 
+def enc_binary(*, v: bytes) -> bytes:
+    """Encode raw bytes as a BIN-RPC binary value (T_BINARY)."""
+    return _be_u32(n=T_BINARY) + _be_u32(n=len(v)) + v
+
+
 def enc_data(*, v: Any, encoding: str) -> bytes:
     """Encode any data type as a BIN-RPC data type."""
     if isinstance(v, bool):
@@ -103,6 +108,8 @@ def enc_data(*, v: Any, encoding: str) -> bytes:
         return enc_double(v=v)
     if isinstance(v, str):
         return enc_string(s=v, encoding=encoding)
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return enc_binary(v=bytes(v))
     if isinstance(v, (list, tuple)):
         return enc_array(a=list(v), encoding=encoding)
     if isinstance(v, dict):

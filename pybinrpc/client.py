@@ -8,12 +8,12 @@ import socket
 import ssl
 import struct
 import threading
-from typing import Any, Self
+from typing import Any, Final, Self
 
 from pybinrpc.const import DEFAULT_ENCODING
 from pybinrpc.support import dec_response, enc_request, recv_exact
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER: Final = logging.getLogger(__name__)
 
 
 # =============================================================================

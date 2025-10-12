@@ -11,12 +11,12 @@ import contextlib
 import logging
 import socketserver
 import struct
-from typing import Any
+from typing import Any, Final
 
 from pybinrpc.const import DEFAULT_ENCODING, HDR_REQ
 from pybinrpc.support import dec_request, enc_response, recv_exact
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER: Final = logging.getLogger(__name__)
 
 
 class SimpleBINRPCRequestHandler(socketserver.BaseRequestHandler):
