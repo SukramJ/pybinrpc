@@ -26,7 +26,9 @@ def _be_u32(n: int) -> bytes:
 
 
 def _rd_u32(buf: memoryview, ofs: int) -> tuple[int, int]:
-    """Decode an unsigned 32-bit integer from big-endian bytes."""
+    """Decode an unsigned 32-bit integer from big-endian bytes with bounds check."""
+    if ofs + 4 > len(buf):
+        raise ValueError(f"Truncated BIN-RPC buffer (need 4 bytes at {ofs}, have {len(buf)})")
     return struct.unpack_from(">I", buf, ofs)[0], ofs + 4
 
 
@@ -141,32 +143,122 @@ def enc_response(*, ret: Any, encoding: str) -> bytes:
 
 
 def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
-    """Decode a double from a BIN-RPC double."""
+    """
+    Decode a double from a BIN-RPC double.
+
+    Be lenient with truncated payloads (e.g., from some CCU/CuxD frames): if the
+    exponent or mantissa is incomplete, return 0.0 and advance to the end of the
+    buffer instead of raising, to avoid noisy server warnings.
+    """
+    # Need 4 bytes for exponent
+    if ofs + 4 > len(buf):
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Truncated BIN-RPC buffer while reading double exponent (available=%d)",
+                max(0, len(buf) - ofs),
+            )
+        return 0.0, len(buf)
     e, ofs = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
+    # Need 4 bytes for mantissa (unsigned 32-bit)
+    if ofs + 4 > len(buf):
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Truncated BIN-RPC buffer while reading double mantissa (available=%d)",
+                max(0, len(buf) - ofs),
+            )
+        return 0.0, len(buf)
     mu32, ofs = _rd_u32(buf=buf, ofs=ofs)
     return (float(mu32) / float(1 << 30)) * (2**e), ofs
 
 
 def _dec_string(*, buf: memoryview, ofs: int, encoding: str) -> tuple[str, int]:
-    """Decode a string from a BIN-RPC string using the configured encoding."""
+    """
+    Decode a string from a BIN-RPC string using the configured encoding.
+
+    Be lenient with peers that sometimes advertise a length larger than the
+    remaining buffer (observed with some CCU/CuxD implementations). In that
+    case, decode the available bytes and advance to the end of the buffer
+    instead of raising, to avoid noisy server warnings.
+    """
     length, ofs = _rd_u32(buf=buf, ofs=ofs)
-    s = bytes(buf[ofs : ofs + length]).decode(encoding, errors="replace")
-    return s, ofs + length
+    # If the payload is truncated, decode what we have and advance to the end.
+    if (end := ofs + length) > len(buf):
+        avail = max(0, len(buf) - ofs)
+        s = bytes(buf[ofs : ofs + avail]).decode(encoding, errors="replace")
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Truncated BIN-RPC string payload (declared=%d, available=%d) — decoding available bytes",
+                length,
+                avail,
+            )
+        return s, len(buf)
+    s = bytes(buf[ofs:end]).decode(encoding, errors="replace")
+    return s, end
 
 
 def _dec_bool(*, buf: memoryview, ofs: int) -> tuple[bool, int]:
-    """Decode a boolean from a BIN-RPC boolean."""
+    """
+    Decode a boolean from a BIN-RPC boolean.
+
+    Be lenient with truncated payloads: if the single byte is missing, return
+    False and advance to the end of the buffer instead of raising, to avoid
+    noisy server warnings.
+    """
+    if ofs >= len(buf):
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug("Truncated BIN-RPC buffer while reading boolean (available=0)")
+        return False, len(buf)
     return (buf[ofs] == 1), ofs + 1
 
 
 def _dec_binary(*, buf: memoryview, ofs: int) -> tuple[bytes, int]:
+    """
+    Decode raw bytes from a BIN-RPC binary value (T_BINARY).
+
+    Be lenient with truncated payloads:
+    - If the 4-byte length field itself is truncated, return empty bytes and
+      advance to the end of the buffer.
+    - If the declared payload is longer than the remaining buffer, return the
+      available bytes and advance to the end of the buffer instead of raising.
+    """
+    # Ensure we have the 4-byte length field
+    if ofs + 4 > len(buf):
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Truncated BIN-RPC buffer while reading binary length (available=%d)",
+                max(0, len(buf) - ofs),
+            )
+        return b"", len(buf)
     length, ofs = _rd_u32(buf=buf, ofs=ofs)  # 4-byte length
-    data = bytes(buf[ofs : ofs + length])  # raw bytes
-    return data, ofs + length
+    if (end := ofs + length) > len(buf):
+        avail = max(0, len(buf) - ofs)
+        data = bytes(buf[ofs : ofs + avail])
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Truncated BIN-RPC binary payload (declared=%d, available=%d) — returning available bytes",
+                length,
+                avail,
+            )
+        return data, len(buf)
+    data = bytes(buf[ofs:end])  # raw bytes
+    return data, end
 
 
 def _dec_int(*, buf: memoryview, ofs: int) -> tuple[int, int]:
-    """Decode an integer from a BIN-RPC integer."""
+    """
+    Decode an integer from a BIN-RPC integer.
+
+    Be lenient with truncated payloads: if fewer than 4 bytes remain, return 0
+    and advance to the end of the buffer instead of raising, to avoid noisy
+    server warnings.
+    """
+    if ofs + 4 > len(buf):
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Truncated BIN-RPC buffer while reading integer (available=%d)",
+                max(0, len(buf) - ofs),
+            )
+        return 0, len(buf)
     v, ofs = _rd_u32(buf=buf, ofs=ofs)
     if v & 0x80000000:
         v = -((~v + 1) & 0xFFFFFFFF)
