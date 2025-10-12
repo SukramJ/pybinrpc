@@ -99,6 +99,15 @@ class _Transport:
             ctx = self._tls
         else:
             ctx = ssl.create_default_context()
+            # Explicitly only allow TLSv1.2 and higher
+            if hasattr(ctx, "minimum_version") and hasattr(ssl, "TLSVersion"):
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2  # Python 3.7+
+            else:
+                # For legacy Python, disable TLS <1.2 if possible
+                if hasattr(ssl, "OP_NO_TLSv1"):
+                    ctx.options |= ssl.OP_NO_TLSv1
+                if hasattr(ssl, "OP_NO_TLSv1_1"):
+                    ctx.options |= ssl.OP_NO_TLSv1_1
             if not self._tls_verify:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
