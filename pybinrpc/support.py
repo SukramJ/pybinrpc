@@ -267,6 +267,15 @@ def _dec_int(*, buf: memoryview, ofs: int) -> tuple[int, int]:
 
 def dec_data(*, buf: memoryview, encoding: str, ofs: int = 0) -> tuple[Any, int]:
     """Decode data from a BIN-RPC data type."""
+    # If there is no room for a 4-byte type tag, be lenient and return an empty string
+    # and advance to the end of the buffer instead of raising.
+    if ofs + 4 > len(buf):
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Truncated BIN-RPC buffer while reading type tag (available=%d)",
+                max(0, len(buf) - ofs),
+            )
+        return "", len(buf)
     t, ofs = _rd_u32(buf=buf, ofs=ofs)
     if t == T_STRING:
         return _dec_string(buf=buf, ofs=ofs, encoding=encoding)
