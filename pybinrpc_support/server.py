@@ -15,6 +15,7 @@ import struct
 import threading
 from typing import Any
 
+from pybinrpc.const import DEFAULT_ENCODING
 from pybinrpc.server import SimpleBINRPCServer
 from pybinrpc.support import enc_request
 
@@ -49,6 +50,8 @@ class FakeServer(SimpleBINRPCServer):
         self.register_function(self.setValue, "setValue")
         self.register_function(self.getValue, "getValue")
         self.register_function(self.listDevices, "listDevices")
+        self.register_introspection_functions()
+        self.register_multicall_functions()
         self.events: list[tuple[str, str, str, Any]] = []
         # Start a lightweight callback server for handling 'event' RPCs during tests
         self._cb_server = SimpleBINRPCServer(("127.0.0.1", 19126), timeout=timeout)
@@ -114,7 +117,9 @@ class FakeServer(SimpleBINRPCServer):
         # Fire an `event` call to the registered callback
         reader, writer = await asyncio.open_connection(host, port)
         try:
-            frame = enc_request(method="event", params=[interface_id, address, datapoint, value], encoding="utf-8")
+            frame = enc_request(
+                method="event", params=[interface_id, address, datapoint, value], encoding=DEFAULT_ENCODING
+            )
             writer.write(frame)
             await writer.drain()
             # read and ignore response

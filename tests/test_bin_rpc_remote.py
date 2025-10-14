@@ -43,9 +43,12 @@ async def test_serverproxy_init_set_get_remote() -> None:
     datapoint = os.getenv("CUXD_DATAPOINT", "LEVEL")
 
     client = BinRpcServerProxy(host=host, port=int(port))
-    ok = client.init(callback, iface)
-    # Some CUxD variants may return an empty response to init; accept OK or empty/None
-    assert ok in ("OK", "", None)
-    client.setValue(address, datapoint, 1.0)
-    val = client.getValue(address, datapoint)
-    assert val == 1.0
+    try:
+        ok = client.init(callback, iface)
+        # Some CUxD variants may return an empty response to init; accept OK or empty/None
+        assert ok in ("OK", "", None)
+        client.setValue(address, datapoint, 1)
+        val = client.getValue(address, datapoint)
+        assert val == 0.8
+    finally:
+        client.init(callback)

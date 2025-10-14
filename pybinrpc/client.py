@@ -142,6 +142,7 @@ class _Transport:
 
     def call(self, method: str, params: list[Any]) -> Any:  # kwonly: disable
         """Send a BIN-RPC request and return the response."""
+        _LOGGER.info("CALL: %s(%s)", method, params)
         frame = enc_request(method=method, params=params, encoding=self._encoding)
         if self._keep_alive:
             with self._lock:
@@ -160,16 +161,26 @@ class _Transport:
                             continue
                         raise
         else:
-            s = self._ensure_sock()
-            try:
-                s.sendall(frame)
-                hdr = recv_exact(sock=s, n=8, timeout=self._timeout)
-                total = struct.unpack(">I", hdr[4:8])[0]
-                body = recv_exact(sock=s, n=total - 8, timeout=self._timeout)
-                return dec_response(frame=hdr + body, encoding=self._encoding)
-            finally:
-                with contextlib.suppress(Exception):
-                    s.close()
+            for attempt in range(2):
+                s = self._ensure_sock()
+                try:
+                    s.sendall(frame)
+                    hdr = recv_exact(sock=s, n=8, timeout=self._timeout)
+                    total = struct.unpack(">I", hdr[4:8])[0]
+                    body = recv_exact(sock=s, n=total - 8, timeout=self._timeout)
+                    return dec_response(frame=hdr + body, encoding=self._encoding)
+                except Exception:
+                    # close this short‑lived socket and retry once with a fresh connection
+                    with contextlib.suppress(Exception):
+                        s.close()
+                    if attempt == 0:
+                        continue
+                    raise
+                finally:
+                    # Ensure the socket is closed if we didn't return successfully in this iteration
+                    with contextlib.suppress(Exception):
+                        if s is not None:
+                            s.close()
 
 
 class BinRpcServerProxy:
