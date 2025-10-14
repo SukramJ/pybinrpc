@@ -36,7 +36,7 @@ class SimpleBINRPCRequestHandler(socketserver.BaseRequestHandler):
             if hdr[:3] != b"Bin":
                 raise ValueError("Invalid BIN-RPC header")
             total = struct.unpack(">I", hdr[4:8])[0]
-            body = recv_exact(sock=self.request, n=total, timeout=server.timeout)
+            body = recv_exact(sock=self.request, n=total - 8, timeout=server.timeout)
             method, params = dec_request(frame=hdr + body, encoding=server.encoding)
             _LOGGER.info("HANDLE: Received BIN-RPC method: %s, params: %s", method, params)
             result = server._dispatch(method, params)  # pylint: disable=protected-access
