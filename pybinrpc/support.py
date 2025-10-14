@@ -146,29 +146,34 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
     """
     Decode a double from a BIN-RPC double.
 
+    Compatible with hobbyquaker/binrpc protocol.js: exponent and mantissa are
+    32-bit signed integers; value = (mantissa / 2^30) * 2^exponent.
+
     Be lenient with truncated payloads (e.g., from some CCU/CuxD frames): if the
     exponent or mantissa is incomplete, return 0.0 and advance to the end of the
     buffer instead of raising, to avoid noisy server warnings.
+    Additionally, normalize minor floating point noise by rounding to a
+    reasonable precision so that common values like 0.8 round-trip cleanly.
     """
-    # Need 4 bytes for exponent
+    # Need 4 bytes for exponent (signed 32-bit)
     if ofs + 4 > len(buf):
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "Truncated BIN-RPC buffer while reading double exponent (available=%d)",
-                max(0, len(buf) - ofs),
-            )
+        _LOGGER.debug(
+            "Truncated BIN-RPC buffer while reading double exponent (available=%d)",
+            max(0, len(buf) - ofs),
+        )
         return 0.0, len(buf)
     e, ofs = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
-    # Need 4 bytes for mantissa (unsigned 32-bit)
+    # Need 4 bytes for mantissa (signed 32-bit)
     if ofs + 4 > len(buf):
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "Truncated BIN-RPC buffer while reading double mantissa (available=%d)",
-                max(0, len(buf) - ofs),
-            )
+        _LOGGER.debug(
+            "Truncated BIN-RPC buffer while reading double mantissa (available=%d)",
+            max(0, len(buf) - ofs),
+        )
         return 0.0, len(buf)
-    mu32, ofs = _rd_u32(buf=buf, ofs=ofs)
-    return (float(mu32) / float(1 << 30)) * (2**e), ofs
+    m, ofs = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
+    val = (float(m) / float(1 << 30)) * (2**e)
+    # Enforce small rounding to mitigate fixed-point conversion noise.
+    return round(val, 4), ofs
 
 
 def _dec_string(*, buf: memoryview, ofs: int, encoding: str) -> tuple[str, int]:
@@ -185,12 +190,11 @@ def _dec_string(*, buf: memoryview, ofs: int, encoding: str) -> tuple[str, int]:
     if (end := ofs + length) > len(buf):
         avail = max(0, len(buf) - ofs)
         s = bytes(buf[ofs : ofs + avail]).decode(encoding, errors="replace")
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "Truncated BIN-RPC string payload (declared=%d, available=%d) — decoding available bytes",
-                length,
-                avail,
-            )
+        _LOGGER.debug(
+            "Truncated BIN-RPC string payload (declared=%d, available=%d) — decoding available bytes",
+            length,
+            avail,
+        )
         return s, len(buf)
     s = bytes(buf[ofs:end]).decode(encoding, errors="replace")
     return s, end
@@ -205,8 +209,7 @@ def _dec_bool(*, buf: memoryview, ofs: int) -> tuple[bool, int]:
     noisy server warnings.
     """
     if ofs >= len(buf):
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug("Truncated BIN-RPC buffer while reading boolean (available=0)")
+        _LOGGER.debug("Truncated BIN-RPC buffer while reading boolean (available=0)")
         return False, len(buf)
     return (buf[ofs] == 1), ofs + 1
 
@@ -223,22 +226,20 @@ def _dec_binary(*, buf: memoryview, ofs: int) -> tuple[bytes, int]:
     """
     # Ensure we have the 4-byte length field
     if ofs + 4 > len(buf):
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "Truncated BIN-RPC buffer while reading binary length (available=%d)",
-                max(0, len(buf) - ofs),
-            )
+        _LOGGER.debug(
+            "Truncated BIN-RPC buffer while reading binary length (available=%d)",
+            max(0, len(buf) - ofs),
+        )
         return b"", len(buf)
     length, ofs = _rd_u32(buf=buf, ofs=ofs)  # 4-byte length
     if (end := ofs + length) > len(buf):
         avail = max(0, len(buf) - ofs)
         data = bytes(buf[ofs : ofs + avail])
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "Truncated BIN-RPC binary payload (declared=%d, available=%d) — returning available bytes",
-                length,
-                avail,
-            )
+        _LOGGER.debug(
+            "Truncated BIN-RPC binary payload (declared=%d, available=%d) — returning available bytes",
+            length,
+            avail,
+        )
         return data, len(buf)
     data = bytes(buf[ofs:end])  # raw bytes
     return data, end
@@ -253,11 +254,10 @@ def _dec_int(*, buf: memoryview, ofs: int) -> tuple[int, int]:
     server warnings.
     """
     if ofs + 4 > len(buf):
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "Truncated BIN-RPC buffer while reading integer (available=%d)",
-                max(0, len(buf) - ofs),
-            )
+        _LOGGER.debug(
+            "Truncated BIN-RPC buffer while reading integer (available=%d)",
+            max(0, len(buf) - ofs),
+        )
         return 0, len(buf)
     v, ofs = _rd_u32(buf=buf, ofs=ofs)
     if v & 0x80000000:
@@ -265,8 +265,16 @@ def _dec_int(*, buf: memoryview, ofs: int) -> tuple[int, int]:
     return v, ofs
 
 
-def dec_data(*, buf: memoryview, encoding: str, ofs: int = 0) -> tuple[Any, int]:
+def dec_data(*, buf: memoryview, ofs: int, encoding: str) -> tuple[Any, int]:
     """Decode data from a BIN-RPC data type."""
+    # If there is no room for a 4-byte type tag, be lenient and return an empty string
+    # and advance to the end of the buffer instead of raising.
+    if ofs + 4 > len(buf):
+        _LOGGER.debug(
+            "Truncated BIN-RPC buffer while reading type tag (available=%d)",
+            max(0, len(buf) - ofs),
+        )
+        return "", len(buf)
     t, ofs = _rd_u32(buf=buf, ofs=ofs)
     if t == T_STRING:
         return _dec_string(buf=buf, ofs=ofs, encoding=encoding)
@@ -281,8 +289,19 @@ def dec_data(*, buf: memoryview, encoding: str, ofs: int = 0) -> tuple[Any, int]
     if t == T_ARRAY:
         n, ofs = _rd_u32(buf=buf, ofs=ofs)
         outl: list[Any] = []
+        # Leniency: some peers have been observed to emit a zero length here while
+        # actually providing a single element array (e.g., system.multicall payloads).
+        # If n == 0 but data remains and the next element decodes into a struct with
+        # 'methodName' and 'params', treat it as a single-element array.
+        if n == 0 and ofs < len(buf):
+            try:
+                probe_val, probe_ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
+                if isinstance(probe_val, dict) and "methodName" in probe_val and "params" in probe_val:
+                    return [probe_val], probe_ofs
+            except Exception:  # best-effort leniency only
+                pass
         for _ in range(n):
-            val, ofs = dec_data(buf=buf, encoding=encoding, ofs=ofs)
+            val, ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
             outl.append(val)
         return outl, ofs
     if t == T_STRUCT:
@@ -290,7 +309,7 @@ def dec_data(*, buf: memoryview, encoding: str, ofs: int = 0) -> tuple[Any, int]
         outd: dict[str, Any] = {}
         for _ in range(n):
             key, ofs = _dec_string(buf=buf, ofs=ofs, encoding=encoding)
-            val, ofs = dec_data(buf=buf, encoding=encoding, ofs=ofs)
+            val, ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
             outd[key] = val
         return outd, ofs
     if t not in (T_STRING, T_BOOL, T_BINARY, T_INTEGER, T_DOUBLE, T_ARRAY, T_STRUCT):

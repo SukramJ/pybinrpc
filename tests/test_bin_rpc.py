@@ -42,18 +42,47 @@ async def test_multicall(fake_server: FakeServer) -> None:
     assert res[-1] == 42
 
 
-async def test_event_callback(fake_server: FakeServer) -> None:
+async def test_event_callback_with_int(fake_server: FakeServer) -> None:
     """Test event callback."""
     assert fake_server
     client = BinRpcServerProxy(host="127.0.0.1", port=18701)
     ok = client.init("xmlrpc_bin://127.0.0.1:19126", "iface-test")
     assert ok == "OK"
     # Trigger event from fake CUxD
-    await fake_server.triggerEvent("iface-test", "CUX2801001:1", "STATE", 99)
+    await fake_server.triggerEvent("iface-test", "CUX2801001:1", "STATE", 1)
     # Allow a tiny delay for callback handling
     await asyncio.sleep(0.05)
     assert fake_server.events
-    assert fake_server.events[-1] == ("iface-test", "CUX2801001:1", "STATE", 99)
+    assert fake_server.events[-1] == ("iface-test", "CUX2801001:1", "STATE", 1)
+
+
+async def test_event_callback_with_bool(fake_server: FakeServer) -> None:
+    """Test event callback."""
+    assert fake_server
+    client = BinRpcServerProxy(host="127.0.0.1", port=18701)
+    ok = client.init("xmlrpc_bin://127.0.0.1:19126", "iface-test")
+    assert ok == "OK"
+    # Trigger event from fake CUxD
+    await fake_server.triggerEvent("iface-test", "CUX2801001:1", "PRESS_SHORT", True)
+    # Allow a tiny delay for callback handling
+    await asyncio.sleep(0.05)
+    assert fake_server.events
+    assert fake_server.events[-1] == ("iface-test", "CUX2801001:1", "PRESS_SHORT", True)
+
+
+async def test_event_callback_with_double(fake_server: FakeServer) -> None:
+    """Test event callback."""
+    assert fake_server
+    client = BinRpcServerProxy(host="127.0.0.1", port=18701)
+    ok = client.init("xmlrpc_bin://127.0.0.1:19126", "iface-test")
+    assert ok == "OK"
+    # Trigger event from fake CUxD
+    for value in range(1, 100):
+        value = round(value / 100, 2)
+        await fake_server.triggerEvent("iface-test", "CUX2801001:1", "LEVEL", value)
+        # Allow a tiny delay for callback handling
+        assert fake_server.events
+        assert fake_server.events[-1] == ("iface-test", "CUX2801001:1", "LEVEL", value)
 
 
 async def test_list_devices(fake_server: FakeServer) -> None:

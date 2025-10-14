@@ -38,6 +38,7 @@ class SimpleBINRPCRequestHandler(socketserver.BaseRequestHandler):
             total = struct.unpack(">I", hdr[4:8])[0]
             body = recv_exact(sock=self.request, n=total - 8, timeout=server.timeout)
             method, params = dec_request(frame=hdr + body, encoding=server.encoding)
+            _LOGGER.info("HANDLE: Received BIN-RPC method: %s, params: %s", method, params)
             result = server._dispatch(method, params)  # pylint: disable=protected-access
             self.request.sendall(enc_response(ret=result, encoding=server.encoding))
         except Exception as exc:
@@ -79,8 +80,6 @@ class SimpleBINRPCServer(socketserver.ThreadingTCPServer):
         self._functions: dict[str, Callable[..., Any]] = {}
         self._instance: object | None = None
         self._enable_introspection = False
-        # Built-in comparable to xmlrpc.server: system.multicall
-        self.register_function(self.system_multicall, "system.multicall")
 
     # --- registration --------------------------------------------------------
 
@@ -93,9 +92,13 @@ class SimpleBINRPCServer(socketserver.ThreadingTCPServer):
         self._instance = instance
 
     def register_introspection_functions(self) -> None:
-        """Enable `system.listMethods` alongside `system.multicall`."""
+        """Enable `system.listMethods`."""
         self._enable_introspection = True
         self.register_function(self.system_listMethods, "system.listMethods")
+
+    def register_multicall_functions(self) -> None:
+        """Enable `system.multicall`."""
+        self.register_function(self.system_multicall, "system.multicall")
 
     # --- dispatch ------------------------------------------------------------
 

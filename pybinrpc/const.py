@@ -11,7 +11,7 @@ from __future__ import annotations
 import inspect
 from typing import Final
 
-VERSION: Final = "2025.10.0"
+VERSION: Final = "2025.10.1"
 DEFAULT_ENCODING: Final = "utf-8"
 
 # =============================================================================
