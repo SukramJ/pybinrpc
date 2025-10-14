@@ -146,13 +146,16 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
     """
     Decode a double from a BIN-RPC double.
 
+    Compatible with hobbyquaker/binrpc protocol.js: exponent and mantissa are
+    32-bit signed integers; value = (mantissa / 2^30) * 2^exponent.
+
     Be lenient with truncated payloads (e.g., from some CCU/CuxD frames): if the
     exponent or mantissa is incomplete, return 0.0 and advance to the end of the
     buffer instead of raising, to avoid noisy server warnings.
     Additionally, normalize minor floating point noise by rounding to a
     reasonable precision so that common values like 0.8 round-trip cleanly.
     """
-    # Need 4 bytes for exponent
+    # Need 4 bytes for exponent (signed 32-bit)
     if ofs + 4 > len(buf):
         _LOGGER.debug(
             "Truncated BIN-RPC buffer while reading double exponent (available=%d)",
@@ -160,17 +163,16 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
         )
         return 0.0, len(buf)
     e, ofs = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
-    # Need 4 bytes for mantissa (unsigned 32-bit)
+    # Need 4 bytes for mantissa (signed 32-bit)
     if ofs + 4 > len(buf):
         _LOGGER.debug(
             "Truncated BIN-RPC buffer while reading double mantissa (available=%d)",
             max(0, len(buf) - ofs),
         )
         return 0.0, len(buf)
-    mu32, ofs = _rd_u32(buf=buf, ofs=ofs)
-    val = (float(mu32) / float(1 << 30)) * (2**e)
-    # Enforce 2-digit precision to match protocol expectations and tests, and
-    # to mitigate tiny representation errors from fixed-point conversion.
+    m, ofs = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
+    val = (float(m) / float(1 << 30)) * (2**e)
+    # Enforce small rounding to mitigate fixed-point conversion noise.
     return round(val, 4), ofs
 
 
@@ -287,6 +289,17 @@ def dec_data(*, buf: memoryview, ofs: int, encoding: str) -> tuple[Any, int]:
     if t == T_ARRAY:
         n, ofs = _rd_u32(buf=buf, ofs=ofs)
         outl: list[Any] = []
+        # Leniency: some peers have been observed to emit a zero length here while
+        # actually providing a single element array (e.g., system.multicall payloads).
+        # If n == 0 but data remains and the next element decodes into a struct with
+        # 'methodName' and 'params', treat it as a single-element array.
+        if n == 0 and ofs < len(buf):
+            try:
+                probe_val, probe_ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
+                if isinstance(probe_val, dict) and "methodName" in probe_val and "params" in probe_val:
+                    return [probe_val], probe_ofs
+            except Exception:  # best-effort leniency only
+                pass
         for _ in range(n):
             val, ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
             outl.append(val)
