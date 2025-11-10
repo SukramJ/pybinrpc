@@ -22,7 +22,7 @@ HDR_REQ: Final = b"Bin" + b"\x00"
 HDR_RES: Final = b"Bin" + b"\x01"
 
 T_ARRAY: Final = 0x00000100
-T_BINARY: Final = 0x0000000E
+T_BINARY: Final = 0x000000D0  # 0xD0 (208) - compatible with Homegear/libhomegear-base
 T_BOOL: Final = 0x00000002
 T_DOUBLE: Final = 0x00000004
 T_INTEGER: Final = 0x00000001

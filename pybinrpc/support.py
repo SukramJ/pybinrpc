@@ -68,9 +68,15 @@ def _enc_double_parts(*, value: float) -> tuple[int, int]:
 
 
 def enc_double(*, v: float) -> bytes:
-    """Encode a double as a BIN-RPC double."""
+    """
+    Encode a double as a BIN-RPC double.
+
+    Wire format: exponent first, then mantissa (both big-endian signed 32-bit).
+    NOTE: This contradicts the HomeMatic forum specification which documents
+    mantissa-first, but matches the actual behavior of real CCU devices.
+    """
     m, e = _enc_double_parts(value=float(v))
-    return _be_u32(T_DOUBLE) + struct.pack(">iI", e, m & 0xFFFFFFFF)
+    return _be_u32(T_DOUBLE) + struct.pack(">ii", e, m)
 
 
 def enc_array(*, a: Sequence[Any], encoding: str) -> bytes:
@@ -146,8 +152,12 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
     """
     Decode a double from a BIN-RPC double.
 
-    Compatible with hobbyquaker/binrpc protocol.js: exponent and mantissa are
-    32-bit signed integers; value = (mantissa / 2^30) * 2^exponent.
+    Wire format: exponent first, then mantissa (both big-endian signed 32-bit).
+    Formula: value = (mantissa / 2^30) * 2^exponent.
+
+    NOTE: Real CCU devices use exponent-first format, which contradicts the
+    HomeMatic forum specification (which documents mantissa-first). This
+    implementation follows the actual CCU behavior, not the documentation.
 
     Be lenient with truncated payloads (e.g., from some CCU/CuxD frames): if the
     exponent or mantissa is incomplete, return 0.0 and advance to the end of the
@@ -155,7 +165,7 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
     Additionally, normalize minor floating point noise by rounding to a
     reasonable precision so that common values like 0.8 round-trip cleanly.
     """
-    # Need 4 bytes for exponent (signed 32-bit)
+    # Need 4 bytes for exponent (signed 32-bit, comes first in CCU wire format)
     if ofs + 4 > len(buf):
         _LOGGER.debug(
             "Truncated BIN-RPC buffer while reading double exponent (available=%d)",
@@ -163,7 +173,7 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
         )
         return 0.0, len(buf)
     e, ofs = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
-    # Need 4 bytes for mantissa (signed 32-bit)
+    # Need 4 bytes for mantissa (signed 32-bit, comes second in CCU wire format)
     if ofs + 4 > len(buf):
         _LOGGER.debug(
             "Truncated BIN-RPC buffer while reading double mantissa (available=%d)",
