@@ -213,7 +213,7 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
 
     val = (float(m) / float(1 << 30)) * (2**e)
     # Enforce small rounding to mitigate fixed-point conversion noise.
-    return round(val, 4), ofs
+    return round(val, 6), ofs
 
 
 def _dec_string(*, buf: memoryview, ofs: int, encoding: str) -> tuple[str, int]:
