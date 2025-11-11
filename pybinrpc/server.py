@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import contextlib
 import logging
+import socket
 import socketserver
 import struct
 from typing import Any, Final
@@ -36,7 +37,9 @@ class SimpleBINRPCRequestHandler(socketserver.BaseRequestHandler):
             if hdr[:3] != b"Bin":
                 raise ValueError("Invalid BIN-RPC header")
             total = struct.unpack(">I", hdr[4:8])[0]
-            body = recv_exact(sock=self.request, n=total - 8, timeout=server.timeout)
+            body = recv_exact(sock=self.request, n=max(total - 8, 0), timeout=server.timeout)
+            if extra := _drain_pending_bytes(sock=self.request, timeout=server.timeout):
+                body += extra
             method, params = dec_request(frame=hdr + body, encoding=server.encoding)
             _LOGGER.info("HANDLE: Received BIN-RPC method: %s, params: %s", method, params)
             result = server._dispatch(method, params)  # pylint: disable=protected-access
@@ -157,6 +160,31 @@ class SimpleBINRPCServer(socketserver.ThreadingTCPServer):
                 _LOGGER.warning("Error in multicall entry: %s", exc)
                 results.append("")
         return results
+
+
+def _drain_pending_bytes(*, sock: socket.socket, timeout: float) -> bytes:
+    """
+    Read any extra bytes the peer already sent beyond the advertised frame size.
+
+    Some CUxD variants misreport the BIN-RPC length field and keep the TCP
+    connection open until the callback response is sent. To stay compatible,
+    opportunistically consume whatever additional bytes are waiting on the
+    socket without blocking; if there is nothing queued, this returns quickly.
+    """
+    extra = bytearray()
+    prev_timeout = sock.gettimeout()
+    try:
+        sock.settimeout(0.0)
+        while True:
+            if not (chunk := sock.recv(4096)):
+                break
+            extra.extend(chunk)
+    except (BlockingIOError, TimeoutError, InterruptedError, OSError):
+        # No more data queued for this frame.
+        pass
+    finally:
+        sock.settimeout(prev_timeout)
+    return bytes(extra)
 
 
 # =============================================================================
