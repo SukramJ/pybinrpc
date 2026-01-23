@@ -68,9 +68,15 @@ def _enc_double_parts(*, value: float) -> tuple[int, int]:
 
 
 def enc_double(*, v: float) -> bytes:
-    """Encode a double as a BIN-RPC double."""
+    """
+    Encode a double as a BIN-RPC double.
+
+    Wire format: exponent first, then mantissa (both big-endian signed 32-bit).
+    NOTE: This contradicts the HomeMatic forum specification which documents
+    mantissa-first, but matches the actual behavior of real CCU devices.
+    """
     m, e = _enc_double_parts(value=float(v))
-    return _be_u32(T_DOUBLE) + struct.pack(">iI", e, m & 0xFFFFFFFF)
+    return _be_u32(T_DOUBLE) + struct.pack(">ii", e, m)
 
 
 def enc_array(*, a: Sequence[Any], encoding: str) -> bytes:
@@ -146,31 +152,61 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
     """
     Decode a double from a BIN-RPC double.
 
-    Compatible with hobbyquaker/binrpc protocol.js: exponent and mantissa are
-    32-bit signed integers; value = (mantissa / 2^30) * 2^exponent.
+    Wire format varies by implementation:
+    - CCU devices: exponent first, then mantissa (big-endian signed 32-bit)
+    - CUxD/Documentation: mantissa first, then exponent
+
+    Formula: value = (mantissa / 2^30) * 2^exponent.
+
+    This implementation auto-detects the format by trying both orderings and
+    using whichever produces a valid (non-extreme) exponent.
 
     Be lenient with truncated payloads (e.g., from some CCU/CuxD frames): if the
-    exponent or mantissa is incomplete, return 0.0 and advance to the end of the
-    buffer instead of raising, to avoid noisy server warnings.
-    Additionally, normalize minor floating point noise by rounding to a
-    reasonable precision so that common values like 0.8 round-trip cleanly.
+    values are incomplete, return 0.0 and advance to the end of the buffer.
     """
-    # Need 4 bytes for exponent (signed 32-bit)
+    # Need 8 bytes total for two signed 32-bit values
     if ofs + 4 > len(buf):
         _LOGGER.debug(
-            "Truncated BIN-RPC buffer while reading double exponent (available=%d)",
+            "Truncated BIN-RPC buffer while reading double (available=%d)",
             max(0, len(buf) - ofs),
         )
         return 0.0, len(buf)
-    e, ofs = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
-    # Need 4 bytes for mantissa (signed 32-bit)
-    if ofs + 4 > len(buf):
+    val1, _ = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
+    if ofs + 8 > len(buf):
         _LOGGER.debug(
-            "Truncated BIN-RPC buffer while reading double mantissa (available=%d)",
+            "Truncated BIN-RPC buffer while reading double (available=%d)",
             max(0, len(buf) - ofs),
         )
         return 0.0, len(buf)
-    m, ofs = struct.unpack_from(">i", buf, ofs)[0], ofs + 4
+    val2 = struct.unpack_from(">i", buf, ofs + 4)[0]
+    ofs += 8
+
+    # Special case: both zero means 0.0
+    if val1 == 0 and val2 == 0:
+        return 0.0, ofs
+
+    # Valid BIN-RPC doubles typically have exponents in range [-1022, 1023]
+    def is_valid_exp(e: int) -> bool:
+        return -1022 <= e <= 1023
+
+    # Try exponent-first (CCU format)
+    e_first, m_first = val1, val2
+    # Try mantissa-first (CUxD/documentation format)
+    m_second, e_second = val1, val2
+
+    # Auto-detect: use whichever format has a valid exponent
+    if is_valid_exp(e_first) and not is_valid_exp(e_second):
+        e, m = e_first, m_first
+    elif is_valid_exp(e_second) and not is_valid_exp(e_first):
+        e, m = e_second, m_second
+    elif is_valid_exp(e_first):
+        # Both valid or both invalid - prefer exponent-first (CCU)
+        e, m = e_first, m_first
+    else:
+        # Neither format produces a valid exponent
+        _LOGGER.debug("BIN-RPC double with no valid format (val1=%d, val2=%d)", val1, val2)
+        return 0.0, ofs
+
     val = (float(m) / float(1 << 30)) * (2**e)
     # Enforce small rounding to mitigate fixed-point conversion noise.
     return round(val, 4), ofs
@@ -301,16 +337,34 @@ def dec_data(*, buf: memoryview, ofs: int, encoding: str) -> tuple[Any, int]:
             except Exception:  # best-effort leniency only
                 pass
         for _ in range(n):
-            val, ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
-            outl.append(val)
+            # Be lenient: if buffer is exhausted before all elements, return partial array
+            if ofs >= len(buf):
+                _LOGGER.debug("Array truncated: expected %d elements, got %d", n, len(outl))
+                break
+            try:
+                val, ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
+                outl.append(val)
+            except ValueError as e:
+                # Truncation or parse error - return what we have so far
+                _LOGGER.debug("Array element parse error after %d elements: %s", len(outl), e)
+                break
         return outl, ofs
     if t == T_STRUCT:
         n, ofs = _rd_u32(buf=buf, ofs=ofs)
         outd: dict[str, Any] = {}
         for _ in range(n):
-            key, ofs = _dec_string(buf=buf, ofs=ofs, encoding=encoding)
-            val, ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
-            outd[key] = val
+            # Be lenient: if buffer is exhausted before all fields, return partial struct
+            if ofs >= len(buf):
+                _LOGGER.debug("Struct truncated: expected %d fields, got %d", n, len(outd))
+                break
+            try:
+                key, ofs = _dec_string(buf=buf, ofs=ofs, encoding=encoding)
+                val, ofs = dec_data(buf=buf, ofs=ofs, encoding=encoding)
+                outd[key] = val
+            except ValueError as e:
+                # Truncation or parse error - return what we have so far
+                _LOGGER.debug("Struct field parse error after %d fields: %s", len(outd), e)
+                break
         return outd, ofs
     if t not in (T_STRING, T_BOOL, T_BINARY, T_INTEGER, T_DOUBLE, T_ARRAY, T_STRUCT):
         _LOGGER.warning("Unknown BIN-RPC type 0x%08X, treating as string", t)
@@ -348,6 +402,10 @@ def dec_response(*, frame: bytes, encoding: str) -> Any:
     The response body starts with a 32-bit status code (0 == OK), followed by
     an encoded BIN-RPC value. Some peers may omit the status and/or payload.
     We therefore validate sizes defensively and return None for an empty body.
+
+    NOTE: Some implementations (e.g., CUxD) omit the status code and send the
+    data directly. We detect this by checking if the first 4 bytes are a known
+    BIN-RPC type tag (T_ARRAY, T_STRUCT, T_STRING, etc.) and handle accordingly.
     """
     # Be lenient with peer variations: accept any frame starting with b"Bin"
     if len(frame) < 8 or frame[:3] != b"Bin":
@@ -356,14 +414,25 @@ def dec_response(*, frame: bytes, encoding: str) -> Any:
     # If there's no body at all, return None (some implementations send header-only frames)
     if len(body) == 0:
         return None
-    ofs = 0
     # If there is not enough data for a status field, treat entire body as payload
     if len(body) < 4:
         v, _ = dec_data(buf=body, ofs=0, encoding=encoding)
         return v
-    _status, ofs = _rd_u32(buf=body, ofs=ofs)
+
+    # Peek at first 4 bytes to determine format
+    first_u32 = struct.unpack_from(">I", body, 0)[0]
+
+    # Known BIN-RPC type tags that indicate no status code prefix
+    known_types = {T_INTEGER, T_BOOL, T_STRING, T_DOUBLE, T_ARRAY, T_STRUCT, T_BINARY}
+
+    if first_u32 in known_types:
+        # CUxD format: no status code, data starts immediately
+        v, _ = dec_data(buf=body, ofs=0, encoding=encoding)
+        return v
+
+    # Standard format: status code followed by data
     # If there's no payload after the status field, return None
-    if ofs >= len(body):
+    if (ofs := 4) >= len(body):  # skip status
         return None
     v, _ = dec_data(buf=body, ofs=ofs, encoding=encoding)
     return v
