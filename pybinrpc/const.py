@@ -11,8 +11,12 @@ from __future__ import annotations
 import inspect
 from typing import Final
 
-VERSION: Final = "2025.10.1"
+VERSION: Final = "2025.11.0"
 DEFAULT_ENCODING: Final = "utf-8"
+
+# Network constants
+IP_ANY_V4: Final = "0.0.0.0"
+PORT_ANY: Final = 0
 
 # =============================================================================
 # BIN-RPC wire constants & helpers

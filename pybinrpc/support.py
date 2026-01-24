@@ -8,12 +8,16 @@ Public API of this module is defined by __all__.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 import logging
 import math
 import socket
 import struct
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
+
+if TYPE_CHECKING:
+    pass
 
 from pybinrpc.const import HDR_REQ, HDR_RES, T_ARRAY, T_BINARY, T_BOOL, T_DOUBLE, T_INTEGER, T_STRING, T_STRUCT
 
@@ -447,3 +451,30 @@ def recv_exact(*, sock: socket.socket, n: int, timeout: float) -> bytes:
             raise OSError("Connection closed while receiving")
         data += chunk
     return bytes(data)
+
+
+# --- async support functions for AsyncBinRpcServer ---
+
+
+async def async_drain_pending_bytes(
+    reader: asyncio.StreamReader,
+    drain_timeout: float = 0.01,
+) -> bytes:
+    """
+    Async version: Read any extra bytes the peer already sent beyond the advertised frame size.
+
+    Some CUxD variants misreport the BIN-RPC length field. This function
+    opportunistically consumes whatever additional bytes are waiting
+    without blocking for long.
+    """
+    extra = bytearray()
+    try:
+        while chunk := await asyncio.wait_for(reader.read(4096), timeout=drain_timeout):
+            extra.extend(chunk)
+    except TimeoutError:
+        # No more data queued - this is expected
+        pass
+    except Exception:
+        # Any other error - just return what we have
+        pass
+    return bytes(extra)
