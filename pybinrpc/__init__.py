@@ -20,7 +20,15 @@ import sys
 import threading
 from typing import Final
 
+# Async server exports
+from pybinrpc.async_server import AsyncBinRpcDispatcher, AsyncBinRpcServer, AsyncCuxdServer, create_async_bin_rpc_server
+
+# Client exports
+from pybinrpc.client import BinRpcServerProxy
 from pybinrpc.const import VERSION
+
+# Sync server exports (backwards compatibility)
+from pybinrpc.server import CuxdServer, SimpleBINRPCRequestHandler, SimpleBINRPCServer
 
 if sys.stdout.isatty():
     logging.basicConfig(level=logging.INFO)
@@ -41,4 +49,17 @@ if threading.current_thread() is threading.main_thread() and sys.stdout.isatty()
     signal.signal(signal.SIGINT, signal_handler)
 
 # Define public API for the top-level package
-__all__ = ["__version__"]
+__all__ = [
+    "__version__",
+    # Async API
+    "AsyncBinRpcDispatcher",
+    "AsyncBinRpcServer",
+    "AsyncCuxdServer",
+    "create_async_bin_rpc_server",
+    # Sync API (backwards compatibility)
+    "CuxdServer",
+    "SimpleBINRPCRequestHandler",
+    "SimpleBINRPCServer",
+    # Client
+    "BinRpcServerProxy",
+]
