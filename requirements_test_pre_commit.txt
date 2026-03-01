@@ -1,4 +1,4 @@
-bandit==1.9.3
+bandit==1.9.4
 codespell==2.4.1
 pre-commit-hooks==v6.0.0
 python-typing-update==0.8.1
