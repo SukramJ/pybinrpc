@@ -11,7 +11,7 @@ from __future__ import annotations
 import inspect
 from typing import Final
 
-VERSION: Final = "2025.11.0"
+VERSION: Final = "2026.3.0"
 DEFAULT_ENCODING: Final = "utf-8"
 
 # Network constants
@@ -24,6 +24,8 @@ PORT_ANY: Final = 0
 
 HDR_REQ: Final = b"Bin" + b"\x00"
 HDR_RES: Final = b"Bin" + b"\x01"
+HDR_FAULT: Final = b"Bin" + b"\xff"
+MAX_MSG_SIZE: Final = 2 * 1024 * 1024  # 2 MiB
 
 T_ARRAY: Final = 0x00000100
 T_BINARY: Final = 0x000000D0  # 0xD0 (208) - compatible with Homegear/libhomegear-base
@@ -32,6 +34,8 @@ T_DOUBLE: Final = 0x00000004
 T_INTEGER: Final = 0x00000001
 T_STRING: Final = 0x00000003
 T_STRUCT: Final = 0x00000101
+
+VALID_TYPE_TAGS: Final = frozenset({T_INTEGER, T_BOOL, T_STRING, T_DOUBLE, T_BINARY, T_ARRAY, T_STRUCT})
 
 
 # Define public API for this module

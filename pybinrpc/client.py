@@ -10,7 +10,7 @@ import struct
 import threading
 from typing import Any, Final, Self
 
-from pybinrpc.const import DEFAULT_ENCODING
+from pybinrpc.const import DEFAULT_ENCODING, MAX_MSG_SIZE
 from pybinrpc.support import dec_response, enc_request, recv_exact
 
 _LOGGER: Final = logging.getLogger(__name__)
@@ -80,6 +80,7 @@ class _Transport:
         encoding: str = DEFAULT_ENCODING,
         tls: bool | ssl.SSLContext = False,
         tls_verify: bool = True,
+        max_msg_size: int = MAX_MSG_SIZE,
     ):
         """Initialize the transport."""
         self._host = host
@@ -89,6 +90,7 @@ class _Transport:
         self._tls = tls
         self._tls_verify = bool(tls_verify)
         self._encoding = encoding
+        self._max_msg_size = max_msg_size
         self._sock: socket.socket | None = None
         self._lock = threading.Lock()
 
@@ -140,6 +142,14 @@ class _Transport:
                 self._sock.close()
             self._sock = None
 
+    def _send_recv(self, *, s: socket.socket, frame: bytes) -> Any:
+        """Send a frame and receive the response."""
+        s.sendall(frame)
+        hdr = recv_exact(sock=s, n=8, timeout=self._timeout)
+        total = struct.unpack(">I", hdr[4:8])[0]
+        body = recv_exact(sock=s, n=max(total - 8, 0), timeout=self._timeout, max_size=self._max_msg_size)
+        return dec_response(frame=hdr + body, encoding=self._encoding)
+
     def call(self, method: str, params: list[Any]) -> Any:  # kwonly: disable
         """Send a BIN-RPC request and return the response."""
         _LOGGER.info("CALL: %s(%s)", method, params)
@@ -149,13 +159,8 @@ class _Transport:
                 for attempt in range(2):
                     s = self._ensure_sock()
                     try:
-                        s.sendall(frame)
-                        hdr = recv_exact(sock=s, n=8, timeout=self._timeout)
-                        total = struct.unpack(">I", hdr[4:8])[0]
-                        body = recv_exact(sock=s, n=total - 8, timeout=self._timeout)
-                        return dec_response(frame=hdr + body, encoding=self._encoding)
+                        return self._send_recv(s=s, frame=frame)
                     except Exception:
-                        # Drop broken keep-alive and retry once with a new connection
                         self._close()
                         if attempt == 0:
                             continue
@@ -164,20 +169,14 @@ class _Transport:
             for attempt in range(2):
                 s = self._ensure_sock()
                 try:
-                    s.sendall(frame)
-                    hdr = recv_exact(sock=s, n=8, timeout=self._timeout)
-                    total = struct.unpack(">I", hdr[4:8])[0]
-                    body = recv_exact(sock=s, n=total - 8, timeout=self._timeout)
-                    return dec_response(frame=hdr + body, encoding=self._encoding)
+                    return self._send_recv(s=s, frame=frame)
                 except Exception:
-                    # close this short‑lived socket and retry once with a fresh connection
                     with contextlib.suppress(Exception):
                         s.close()
                     if attempt == 0:
                         continue
                     raise
                 finally:
-                    # Ensure the socket is closed if we didn't return successfully in this iteration
                     with contextlib.suppress(Exception):
                         if s is not None:
                             s.close()
@@ -210,6 +209,7 @@ class BinRpcServerProxy:
         timeout: float = 5.0,
         tls: bool | ssl.SSLContext = False,
         tls_verify: bool = True,
+        max_msg_size: int = MAX_MSG_SIZE,
     ):
         """Initialize the transport."""
         # Configure encoding globally for (de)serialization
@@ -221,6 +221,7 @@ class BinRpcServerProxy:
             tls=tls,
             tls_verify=tls_verify,
             encoding=encoding,
+            max_msg_size=max_msg_size,
         )
 
     def __getattr__(self, name: str) -> _Method:  # kwonly: disable

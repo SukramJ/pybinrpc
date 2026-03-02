@@ -14,8 +14,8 @@ import socketserver
 import struct
 from typing import Any, Final
 
-from pybinrpc.const import DEFAULT_ENCODING
-from pybinrpc.support import dec_request, enc_response, recv_exact
+from pybinrpc.const import DEFAULT_ENCODING, MAX_MSG_SIZE
+from pybinrpc.support import dec_request, enc_fault, enc_response, recv_exact
 
 _LOGGER: Final = logging.getLogger(__name__)
 
@@ -37,7 +37,9 @@ class SimpleBINRPCRequestHandler(socketserver.BaseRequestHandler):
             if hdr[:3] != b"Bin":
                 raise ValueError("Invalid BIN-RPC header")
             total = struct.unpack(">I", hdr[4:8])[0]
-            body = recv_exact(sock=self.request, n=max(total - 8, 0), timeout=server.timeout)
+            body = recv_exact(
+                sock=self.request, n=max(total - 8, 0), timeout=server.timeout, max_size=server.max_msg_size
+            )
             if extra := _drain_pending_bytes(sock=self.request, timeout=server.timeout):
                 body += extra
             method, params = dec_request(frame=hdr + body, encoding=server.encoding)
@@ -47,7 +49,7 @@ class SimpleBINRPCRequestHandler(socketserver.BaseRequestHandler):
         except Exception as exc:
             _LOGGER.warning("BIN-RPC handler error: %s", exc)
             with contextlib.suppress(Exception):
-                self.request.sendall(enc_response(ret="", encoding=server.encoding))
+                self.request.sendall(enc_fault(fault_code=-1, fault_string=str(exc), encoding=server.encoding))
 
 
 class SimpleBINRPCServer(socketserver.ThreadingTCPServer):
@@ -74,10 +76,17 @@ class SimpleBINRPCServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
     def __init__(
-        self, addr: tuple[str, int], *, allow_none: bool = True, timeout: float = 10.0, encoding: str = DEFAULT_ENCODING
+        self,
+        addr: tuple[str, int],
+        *,
+        allow_none: bool = True,
+        timeout: float = 10.0,
+        encoding: str = DEFAULT_ENCODING,
+        max_msg_size: int = MAX_MSG_SIZE,
     ) -> None:
         """Initialize the server."""
         self.encoding = encoding
+        self.max_msg_size = max_msg_size
         super().__init__(addr, SimpleBINRPCRequestHandler)
         self.timeout: float = float(timeout)
         self._functions: dict[str, Callable[..., Any]] = {}
