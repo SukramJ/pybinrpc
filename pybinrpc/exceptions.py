@@ -102,6 +102,16 @@ class InternalBackendException(BaseHomematicException):
         super().__init__("InternalBackendException", *args)
 
 
+class BinRpcFaultError(BaseHomematicException):
+    """BIN-RPC fault response received from peer."""
+
+    def __init__(self, *, fault_code: int, fault_string: str) -> None:
+        """Init the BinRpcFaultError."""
+        self.fault_code = fault_code
+        self.fault_string = fault_string
+        super().__init__("BinRpcFaultError", f"faultCode={fault_code}, faultString={fault_string!r}")
+
+
 def _reduce_args(*, args: tuple[Any, ...]) -> tuple[Any, ...] | Any:
     """Return the first arg, if there is only one arg."""
     return args[0] if len(args) == 1 else args

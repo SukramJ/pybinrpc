@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## Version 2026.3.0
+
+### Added
+
+- **Fault frame support** (`Bin\xFF`): New `enc_fault()` encoder and fault detection in `dec_response()`. Fault responses from peers now raise `BinRpcFaultError` with `fault_code` and `fault_string` attributes.
+- **`BinRpcFaultError` exception** in `pybinrpc.exceptions` for structured fault handling.
+- **Configurable max message size**: `recv_exact()` accepts a `max_size` parameter (default 2 MiB) to reject oversized frames. Exposed via `max_msg_size` on `BinRpcServerProxy`, `_Transport`, and `SimpleBINRPCServer`.
+- **`HDR_FAULT`**, **`MAX_MSG_SIZE`**, and **`VALID_TYPE_TAGS`** constants in `pybinrpc.const`.
+- New test files: `tests/test_fault.py` (5 tests) and `tests/test_encoding.py` (6 tests).
+
+### Changed
+
+- **Response frame format**: `enc_response()` no longer emits the 4-byte status field prefix, aligning with Go (mdzio/go-hmccu) and Node.js (hobbyquaker/binrpc) implementations. No real CCU capture ever contained this field.
+- **Response decoding auto-detection**: `dec_response()` now auto-detects whether a response contains a status field prefix (legacy) or starts directly with a type tag. Both formats are decoded correctly.
+- **Integer encoding**: `enc_integer()` now uses signed 32-bit packing (`struct.pack(">i")`) with clamping instead of unsigned masking. Negative integers are now correctly represented on the wire.
+- **Double precision**: Decoding precision increased from `round(val, 4)` to `round(val, 6)`. All existing test values (0.01–0.99, 0.03) produce identical results.
+- **Server error handling**: `SimpleBINRPCServer` now sends fault responses (`enc_fault()`) instead of empty-string responses when handler exceptions occur.
+- **Client retry logic**: Deduplicated send/receive code in `_Transport.call()` into a shared `_send_recv()` method.
+
 ## Version 2025.11.0
 
 ### Added

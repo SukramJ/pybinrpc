@@ -19,7 +19,20 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     pass
 
-from pybinrpc.const import HDR_REQ, HDR_RES, T_ARRAY, T_BINARY, T_BOOL, T_DOUBLE, T_INTEGER, T_STRING, T_STRUCT
+from pybinrpc.const import (
+    HDR_FAULT,
+    HDR_REQ,
+    HDR_RES,
+    T_ARRAY,
+    T_BINARY,
+    T_BOOL,
+    T_DOUBLE,
+    T_INTEGER,
+    T_STRING,
+    T_STRUCT,
+    VALID_TYPE_TAGS,
+)
+from pybinrpc.exceptions import BinRpcFaultError
 
 _LOGGER: Final = logging.getLogger(__name__)
 
@@ -34,6 +47,13 @@ def _rd_u32(buf: memoryview, ofs: int) -> tuple[int, int]:
     if ofs + 4 > len(buf):
         raise ValueError(f"Truncated BIN-RPC buffer (need 4 bytes at {ofs}, have {len(buf)})")
     return struct.unpack_from(">I", buf, ofs)[0], ofs + 4
+
+
+def _rd_i32(buf: memoryview, ofs: int) -> tuple[int, int]:
+    """Decode a signed 32-bit integer from big-endian bytes with bounds check."""
+    if ofs + 4 > len(buf):
+        raise ValueError(f"Truncated BIN-RPC buffer (need 4 bytes at {ofs}, have {len(buf)})")
+    return struct.unpack_from(">i", buf, ofs)[0], ofs + 4
 
 
 def _b(*, s: str, encoding: str) -> bytes:
@@ -57,7 +77,7 @@ def enc_bool(*, v: bool) -> bytes:
 
 def enc_integer(*, n: int) -> bytes:
     """Encode an integer as a BIN-RPC integer."""
-    return _be_u32(n=T_INTEGER) + _be_u32(n=int(n) & 0xFFFFFFFF)
+    return _be_u32(n=T_INTEGER) + struct.pack(">i", max(-2147483648, min(2147483647, int(n))))
 
 
 def _enc_double_parts(*, value: float) -> tuple[int, int]:
@@ -144,9 +164,15 @@ def enc_request(*, method: str, params: list[Any], encoding: str) -> bytes:
 def enc_response(*, ret: Any, encoding: str) -> bytes:
     """Encode a response frame as a BIN-RPC response frame."""
     payload = enc_string(s="", encoding=encoding) if ret is None else enc_data(v=ret, encoding=encoding)
-    body = _be_u32(n=0) + payload
-    total = 8 + len(body)
-    return HDR_RES + _be_u32(n=total) + body
+    total = 8 + len(payload)
+    return HDR_RES + _be_u32(n=total) + payload
+
+
+def enc_fault(*, fault_code: int, fault_string: str, encoding: str) -> bytes:
+    r"""Encode a fault frame as a BIN-RPC fault response (Bin\xFF)."""
+    payload = enc_struct(d={"faultCode": fault_code, "faultString": fault_string}, encoding=encoding)
+    total = 8 + len(payload)
+    return HDR_FAULT + _be_u32(n=total) + payload
 
 
 # --- decoders
@@ -213,7 +239,7 @@ def _dec_double(*, buf: memoryview, ofs: int) -> tuple[float, int]:
 
     val = (float(m) / float(1 << 30)) * (2**e)
     # Enforce small rounding to mitigate fixed-point conversion noise.
-    return round(val, 4), ofs
+    return round(val, 6), ofs
 
 
 def _dec_string(*, buf: memoryview, ofs: int, encoding: str) -> tuple[str, int]:
@@ -400,50 +426,50 @@ def dec_request(*, frame: bytes, encoding: str) -> tuple[str, list[Any]]:
 
 
 def dec_response(*, frame: bytes, encoding: str) -> Any:
-    """
-    Decode a response frame as a BIN-RPC response frame.
-
-    The response body starts with a 32-bit status code (0 == OK), followed by
-    an encoded BIN-RPC value. Some peers may omit the status and/or payload.
-    We therefore validate sizes defensively and return None for an empty body.
-
-    NOTE: Some implementations (e.g., CUxD) omit the status code and send the
-    data directly. We detect this by checking if the first 4 bytes are a known
-    BIN-RPC type tag (T_ARRAY, T_STRUCT, T_STRING, etc.) and handle accordingly.
-    """
-    # Be lenient with peer variations: accept any frame starting with b"Bin"
+    """Decode a response frame. Supports fault (0xFF), with/without status field."""
     if len(frame) < 8 or frame[:3] != b"Bin":
         raise ValueError("Invalid BIN-RPC response frame")
+
+    # Fault detection
+    if frame[3] == 0xFF:
+        body = memoryview(frame)[8:]
+        if len(body) == 0:
+            raise BinRpcFaultError(fault_code=-1, fault_string="empty fault frame")
+        fault_data, _ = dec_data(buf=body, ofs=0, encoding=encoding)
+        if isinstance(fault_data, dict):
+            raise BinRpcFaultError(
+                fault_code=int(fault_data.get("faultCode", -1)),
+                fault_string=str(fault_data.get("faultString", "")),
+            )
+        raise BinRpcFaultError(fault_code=-1, fault_string=str(fault_data))
+
     body = memoryview(frame)[8:]
-    # If there's no body at all, return None (some implementations send header-only frames)
     if len(body) == 0:
         return None
-    # If there is not enough data for a status field, treat entire body as payload
+
+    # Auto-detect: known type tag → no status field; 0x00000000 → legacy with status
+    if len(body) >= 4:
+        first_u32, _ = _rd_u32(buf=body, ofs=0)
+        if first_u32 in VALID_TYPE_TAGS:
+            v, _ = dec_data(buf=body, ofs=0, encoding=encoding)
+            return v
+
+    # Legacy format with status field
+    ofs = 0
     if len(body) < 4:
         v, _ = dec_data(buf=body, ofs=0, encoding=encoding)
         return v
-
-    # Peek at first 4 bytes to determine format
-    first_u32 = struct.unpack_from(">I", body, 0)[0]
-
-    # Known BIN-RPC type tags that indicate no status code prefix
-    known_types = {T_INTEGER, T_BOOL, T_STRING, T_DOUBLE, T_ARRAY, T_STRUCT, T_BINARY}
-
-    if first_u32 in known_types:
-        # CUxD format: no status code, data starts immediately
-        v, _ = dec_data(buf=body, ofs=0, encoding=encoding)
-        return v
-
-    # Standard format: status code followed by data
-    # If there's no payload after the status field, return None
-    if (ofs := 4) >= len(body):  # skip status
+    _status, ofs = _rd_u32(buf=body, ofs=ofs)
+    if ofs >= len(body):
         return None
     v, _ = dec_data(buf=body, ofs=ofs, encoding=encoding)
     return v
 
 
-def recv_exact(*, sock: socket.socket, n: int, timeout: float) -> bytes:
+def recv_exact(*, sock: socket.socket, n: int, timeout: float, max_size: int = 0) -> bytes:
     """Receive exactly n bytes from the socket, raising IOError if connection closed."""
+    if 0 < max_size < n:
+        raise ValueError(f"BIN-RPC message size {n} exceeds limit {max_size}")
     sock.settimeout(timeout)
     data = bytearray()
     while len(data) < n:
